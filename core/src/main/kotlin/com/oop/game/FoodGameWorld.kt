@@ -5,7 +5,6 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.math.MathUtils
-import java.util.concurrent.CopyOnWriteArrayList
 
 class FoodGameWorld : GameWorld(1024f, 768f) {
 
@@ -29,6 +28,23 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     private var debuffAcquiredCount = 0
     private var typhoonTimer = 0f
     private var isTyphoonActive = false
+
+    // 일반/희귀 음식을 5회 연속 획득하면 자석 5초 발동
+    private var goodFoodStreak = 0
+    private var magnetTimer = 0f
+    private val magnetDuration = 5f
+    private val magnetPullSpeed = 1750f
+
+    // 팰리컨 QTE: 3스테이지, 10~15초 간격, 3초 안에 SPACE 10번
+    private var pelicanSpawnTimer = 0f
+    private var pelicanSpawnInterval = MathUtils.random(10f, 15f)
+    private var isPelicanActive = false
+    private var pelicanTimeLeft = 0f
+    private var pelicanPressCount = 0
+    private var pelicanFeedback = ""
+    private var pelicanFeedbackTimer = 0f
+    private var pelicanTextureIdle: Texture? = null
+    private var pelicanTextureHit: Texture? = null
 
     private var feverTimer = 0f
     private var isFeverActive = false
@@ -57,6 +73,8 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
         backgroundTextures[1] = Texture(Gdx.files.internal("st1_bg.png"))
         backgroundTextures[2] = Texture(Gdx.files.internal("st2_bg.png"))
         backgroundTextures[3] = Texture(Gdx.files.internal("st3_bg.png"))
+        pelicanTextureIdle = Texture(Gdx.files.internal("pellican-01.png"))
+        pelicanTextureHit = Texture(Gdx.files.internal("pellican-02.png"))
     }
 
     override fun update(delta: Float) {
@@ -112,6 +130,11 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
             spawnAlterTimer -= delta
             if (spawnAlterTimer <= 0f) spawnAlterType = ""
         }
+        if (magnetTimer > 0f) {
+            magnetTimer = (magnetTimer - delta).coerceAtLeast(0f)
+        }
+
+        updatePelican(delta)
 
         // 3. 컨트롤러 입력 처리
         var moveSpeed = 450f * currentSpeedMultiplier * delta
@@ -121,22 +144,107 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
         // 4. 아이템 생성 시스템 구동
         handleSpawning(delta)
 
-        // 5. 물리 역학 및 충돌 판정 루틴
-        val objects = getObjects()
-        for (obj in objects) {
-            if (obj is FallingObject) {
-                // 전역 낙하속도 보정 적용
-                obj.isTyphoonMode = isTyphoonActive
+        // 낙하 → 자석 흡인 → 충돌 및 점수 처리 → 소멸
+        getObjects().filterIsInstance<FallingObject>().forEach {
+            it.isTyphoonMode = isTyphoonActive
+        }
+        updateAllObjects(delta)
+        handleFoodInteractions(delta)
+        removeDead()
+    }
 
-                if (playerObj.collidesWith(obj)) {
-                    processObjectAcquisition(obj)
-                    obj.y = -200f // 강제 추락 소멸 유도
+    private fun magnetEligible(type: FoodType): Boolean = when (type) {
+        FoodType.BASIC, FoodType.RARE,
+        FoodType.BUFF_SPEED, FoodType.BUFF_MULTIPLIER,
+        FoodType.BUFF_FEVER, FoodType.BUFF_TIME -> true
+        else -> false // 디버프 음식은 자석으로 끌어오지 않는다.
+    }
+
+    private fun handleFoodInteractions(delta: Float) {
+        val targetX = playerObj.x + playerObj.width / 2f
+        val targetY = playerObj.y + playerObj.height / 2f
+        for (food in getObjects().filterIsInstance<FallingObject>()) {
+            if (!food.isAlive()) {
+                remove(food)
+                food.dispose()
+                continue
+            }
+            val magnetPickup = magnetTimer > 0f && magnetEligible(food.type)
+            if (magnetPickup) {
+                // 물리 계산만 업데이트하고 렌더링은 render에서 수행한다.
+                val dx = targetX - (food.x + food.width / 2f)
+                val dy = targetY - (food.y + food.height / 2f)
+                val distance = kotlin.math.sqrt(dx * dx + dy * dy)
+                if (distance > 0.001f) {
+                    val travel = minOf(distance, magnetPullSpeed * delta)
+                    food.x += dx / distance * travel
+                    food.y += dy / distance * travel
                 }
             }
+            if (playerObj.collidesWith(food)) {
+                processObjectAcquisition(food, fromMagnet = magnetPickup)
+                remove(food)
+                food.dispose()
+            }
+        }
+    }
+
+    private fun updatePelican(delta: Float) {
+        pelicanFeedbackTimer = (pelicanFeedbackTimer - delta).coerceAtLeast(0f)
+
+        if (!isPelicanActive) {
+            // 새 이벤트는 3스테이지에서만 시작한다.
+            // 와인 효과로 스테이지가 바뀌어도 진행 중인 QTE는 끝까지 처리한다.
+            if (currentStage != 3) return
+            pelicanSpawnTimer += delta
+            if (pelicanSpawnTimer >= pelicanSpawnInterval) {
+                isPelicanActive = true
+                pelicanPressCount = 0
+                pelicanTimeLeft = 3f
+                pelicanSpawnTimer = 0f
+                pelicanSpawnInterval = MathUtils.random(10f, 15f)
+            }
+            return
         }
 
-        updateAllObjects(delta)
-        removeDead()
+        if (InputHandler.isKeyJustPressed(InputHandler.SPACE)) {
+            pelicanPressCount++
+            if (pelicanPressCount >= 10) {
+                finishPelicanEvent(true)
+                return
+            }
+        }
+        pelicanTimeLeft -= delta
+        if (pelicanTimeLeft <= 0f) finishPelicanEvent(false)
+    }
+
+    private fun finishPelicanEvent(success: Boolean) {
+        isPelicanActive = false
+        pelicanTimeLeft = 0f
+        pelicanFeedback = if (success) "PELICAN DEFENDED!" else "PELICAN STOLE THE FOOD!"
+        pelicanFeedbackTimer = 1.8f
+        if (!success) {
+            getObjects().filterIsInstance<FallingObject>().forEach { food ->
+                remove(food)
+                food.dispose()
+            }
+        }
+    }
+
+    private fun drawPelicanEvent() {
+        if (currentGameState != GameState.IN_PLAY) return
+        if (isPelicanActive) {
+            val texture = if (pelicanPressCount % 2 == 0) pelicanTextureIdle else pelicanTextureHit
+            texture?.let {
+                batch.begin()
+                batch.draw(it, screenWidth / 2f - 90f, screenHeight - 246f, 180f, 160f)
+                batch.end()
+            }
+            drawTextOnScreen("PELICAN! PRESS SPACE 10 TIMES", screenWidth / 2f - 205f, screenHeight - 252f, Color.YELLOW, 1.25f)
+            drawTextOnScreen("${pelicanPressCount}/10 | ${"%.1f".format(java.util.Locale.US, pelicanTimeLeft.coerceAtLeast(0f))}s", screenWidth / 2f - 60f, screenHeight - 284f, Color.WHITE, 1.25f)
+        } else if (pelicanFeedbackTimer > 0f) {
+            drawTextOnScreen(pelicanFeedback, screenWidth / 2f - 166f, screenHeight - 155f, Color.YELLOW, 1.2f)
+        }
     }
 
     private fun updateGameOverScreen() {
@@ -184,7 +292,17 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
             generated?.let { add(it) }
         }
     }
-    private fun processObjectAcquisition(obj: FallingObject) {
+    private fun processObjectAcquisition(obj: FallingObject, fromMagnet: Boolean = false) {
+        // 자석으로 끌어온 음식을 새로운 연속 획득 횟수에 중복 집계하지 않는다.
+        if (!fromMagnet) {
+            goodFoodStreak = if (obj.type == FoodType.BASIC || obj.type == FoodType.RARE) {
+                goodFoodStreak + 1
+            } else 0
+            if (goodFoodStreak >= 5) {
+                magnetTimer = magnetDuration
+                goodFoodStreak = 0
+            }
+        }
         // 기본 음식 및 희귀 음식 점수 정산 (콤보 누적)
         if (obj.type == FoodType.BASIC || obj.type == FoodType.RARE) {
             comboCount++
@@ -275,12 +393,36 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     }
 
     private fun resetGame() {
+        getObjects().filterIsInstance<FallingObject>().forEach { food ->
+            remove(food)
+            food.dispose()
+        }
         gameScore = 0
         totalTimer = 180f
         comboCount = 0
         debuffAcquiredCount = 0
+        goodFoodStreak = 0
+        magnetTimer = 0f
         resetStatusEffects()
         isTyphoonActive = false
+        typhoonTimer = 0f
+        feverTimer = 0f
+        isFeverActive = false
+        spawnAlterTimer = 0f
+        spawnAlterType = ""
+        basicSpawnTimer = 0f
+        rareSpawnTimer = 0f
+        debuffSpawnTimer = 0f
+        buffSpawnTimer = 0f
+        currentStage = 1
+        playerObj.updateState(1, "")
+        isPelicanActive = false
+        pelicanSpawnTimer = 0f
+        pelicanSpawnInterval = MathUtils.random(10f, 15f)
+        pelicanPressCount = 0
+        pelicanTimeLeft = 0f
+        pelicanFeedback = ""
+        pelicanFeedbackTimer = 0f
         currentGameState = GameState.IN_PLAY
     }
 
@@ -341,7 +483,10 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
                 // 중앙 상단 고정: 스테이지 표기
                 drawTextOnScreen("STAGE $currentStage", screenWidth / 2 - 50f, screenHeight - 20f, Color.CYAN, 1.8f)
                 if (isTyphoonActive) {
-                    drawTextOnScreen("⚠️ TYPHOON WARNING! ⚠️", screenWidth / 2 - 120f, screenHeight - 60f, Color.RED, 1.4f)
+                    drawTextOnScreen("TYPHOON ${"%.1f".format(java.util.Locale.US, typhoonTimer.coerceAtLeast(0f))}s", screenWidth / 2f - 100f, screenHeight - 60f, Color.RED, 1.4f)
+                }
+                if (magnetTimer > 0f) {
+                    drawTextOnScreen("MAGNET ${"%.1f".format(java.util.Locale.US, magnetTimer)}s", screenWidth / 2f - 90f, screenHeight - 92f, Color.YELLOW, 1.3f)
                 }
 
                 // 우측 상단 고정: 타이머, 스코어, 콤보
@@ -368,11 +513,14 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
                 }
             }
         }
+        drawPelicanEvent()
     }
 
     override fun dispose() {
         super.dispose()
         backgroundTextures.values.forEach { it.dispose() }
+        pelicanTextureIdle?.dispose()
+        pelicanTextureHit?.dispose()
     }
 }
 
