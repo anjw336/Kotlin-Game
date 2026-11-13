@@ -191,9 +191,11 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
 
     private fun updatePelican(delta: Float) {
         pelicanFeedbackTimer = (pelicanFeedbackTimer - delta).coerceAtLeast(0f)
-        if (currentStage != 3) return
 
         if (!isPelicanActive) {
+            // 새 이벤트는 3스테이지에서만 시작한다.
+            // 와인 효과로 스테이지가 바뀌어도 진행 중인 QTE는 끝까지 처리한다.
+            if (currentStage != 3) return
             pelicanSpawnTimer += delta
             if (pelicanSpawnTimer >= pelicanSpawnInterval) {
                 isPelicanActive = true
