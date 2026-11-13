@@ -29,6 +29,12 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     private var typhoonTimer = 0f
     private var isTyphoonActive = false
 
+    // 일반/희귀 음식을 5회 연속 획득하면 자석 5초 발동
+    private var goodFoodStreak = 0
+    private var magnetTimer = 0f
+    private val magnetDuration = 5f
+    private val magnetPullSpeed = 1750f
+
     // 팰리컨 QTE: 3스테이지, 10~15초 간격, 3초 안에 SPACE 10번
     private var pelicanSpawnTimer = 0f
     private var pelicanSpawnInterval = MathUtils.random(10f, 15f)
@@ -124,6 +130,9 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
             spawnAlterTimer -= delta
             if (spawnAlterTimer <= 0f) spawnAlterType = ""
         }
+        if (magnetTimer > 0f) {
+            magnetTimer = (magnetTimer - delta).coerceAtLeast(0f)
+        }
 
         updatePelican(delta)
 
@@ -135,22 +144,49 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
         // 4. 아이템 생성 시스템 구동
         handleSpawning(delta)
 
-        // 5. 물리 역학 및 충돌 판정 루틴
-        val objects = getObjects()
-        for (obj in objects) {
-            if (obj is FallingObject) {
-                // 전역 낙하속도 보정 적용
-                obj.isTyphoonMode = isTyphoonActive
+        // 낙하 → 자석 흡인 → 충돌 및 점수 처리 → 소멸
+        getObjects().filterIsInstance<FallingObject>().forEach {
+            it.isTyphoonMode = isTyphoonActive
+        }
+        updateAllObjects(delta)
+        handleFoodInteractions(delta)
+        removeDead()
+    }
 
-                if (playerObj.collidesWith(obj)) {
-                    processObjectAcquisition(obj)
-                    obj.y = -200f // 강제 추락 소멸 유도
+    private fun magnetEligible(type: FoodType): Boolean = when (type) {
+        FoodType.BASIC, FoodType.RARE,
+        FoodType.BUFF_SPEED, FoodType.BUFF_MULTIPLIER,
+        FoodType.BUFF_FEVER, FoodType.BUFF_TIME -> true
+        else -> false // 디버프 음식은 자석으로 끌어오지 않는다.
+    }
+
+    private fun handleFoodInteractions(delta: Float) {
+        val targetX = playerObj.x + playerObj.width / 2f
+        val targetY = playerObj.y + playerObj.height / 2f
+        for (food in getObjects().filterIsInstance<FallingObject>()) {
+            if (!food.isAlive()) {
+                remove(food)
+                food.dispose()
+                continue
+            }
+            val magnetPickup = magnetTimer > 0f && magnetEligible(food.type)
+            if (magnetPickup) {
+                // 물리 계산만 업데이트하고 렌더링은 render에서 수행한다.
+                val dx = targetX - (food.x + food.width / 2f)
+                val dy = targetY - (food.y + food.height / 2f)
+                val distance = kotlin.math.sqrt(dx * dx + dy * dy)
+                if (distance > 0.001f) {
+                    val travel = minOf(distance, magnetPullSpeed * delta)
+                    food.x += dx / distance * travel
+                    food.y += dy / distance * travel
                 }
             }
+            if (playerObj.collidesWith(food)) {
+                processObjectAcquisition(food, fromMagnet = magnetPickup)
+                remove(food)
+                food.dispose()
+            }
         }
-
-        updateAllObjects(delta)
-        removeDead()
     }
 
     private fun updatePelican(delta: Float) {
@@ -254,7 +290,17 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
             generated?.let { add(it) }
         }
     }
-    private fun processObjectAcquisition(obj: FallingObject) {
+    private fun processObjectAcquisition(obj: FallingObject, fromMagnet: Boolean = false) {
+        // 자석으로 끌어온 음식을 새로운 연속 획득 횟수에 중복 집계하지 않는다.
+        if (!fromMagnet) {
+            goodFoodStreak = if (obj.type == FoodType.BASIC || obj.type == FoodType.RARE) {
+                goodFoodStreak + 1
+            } else 0
+            if (goodFoodStreak >= 5) {
+                magnetTimer = magnetDuration
+                goodFoodStreak = 0
+            }
+        }
         // 기본 음식 및 희귀 음식 점수 정산 (콤보 누적)
         if (obj.type == FoodType.BASIC || obj.type == FoodType.RARE) {
             comboCount++
@@ -353,6 +399,8 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
         totalTimer = 180f
         comboCount = 0
         debuffAcquiredCount = 0
+        goodFoodStreak = 0
+        magnetTimer = 0f
         resetStatusEffects()
         isTyphoonActive = false
         typhoonTimer = 0f
@@ -433,7 +481,10 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
                 // 중앙 상단 고정: 스테이지 표기
                 drawTextOnScreen("STAGE $currentStage", screenWidth / 2 - 50f, screenHeight - 20f, Color.CYAN, 1.8f)
                 if (isTyphoonActive) {
-                    drawTextOnScreen("⚠️ TYPHOON WARNING! ⚠️", screenWidth / 2 - 120f, screenHeight - 60f, Color.RED, 1.4f)
+                    drawTextOnScreen("TYPHOON ${"%.1f".format(java.util.Locale.US, typhoonTimer.coerceAtLeast(0f))}s", screenWidth / 2f - 100f, screenHeight - 60f, Color.RED, 1.4f)
+                }
+                if (magnetTimer > 0f) {
+                    drawTextOnScreen("MAGNET ${"%.1f".format(java.util.Locale.US, magnetTimer)}s", screenWidth / 2f - 90f, screenHeight - 92f, Color.YELLOW, 1.3f)
                 }
 
                 // 우측 상단 고정: 타이머, 스코어, 콤보
