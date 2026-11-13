@@ -40,9 +40,10 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     // 팰리컨 QTE: 3스테이지, 10~15초 간격, 3초 안에 SPACE 10번
     private var pelicanSpawnTimer = 0f
     private var pelicanSpawnInterval = Random.nextDouble(10.0, 15.0).toFloat()
-    private var isPelicanActive = false
     // 0: 대기, 1: QTE 진행, 2: 방어 성공, 3: 방어 실패
     private var pelicanState = 0
+    private val isPelicanActive: Boolean
+        get() = pelicanState == 1
     private var pelicanHp = 10
     private var pelicanTimer = 0f
     private var pelicanX = 0f
@@ -199,16 +200,16 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     private fun updatePelican(delta: Float) {
         pelicanFeedbackTimer = (pelicanFeedbackTimer - delta).coerceAtLeast(0f)
 
-        // 스테이지 3에서만 등장. PPT에 제시한 상태/좌표 초기화 순서를 유지한다.
+        // 스테이지 3에서만 등장. 진행 상태는 pelicanState로 판단한다.
         if (currentStage == 3 && !isPelicanActive) {
             pelicanSpawnTimer += delta
             if (pelicanSpawnTimer >= pelicanSpawnInterval) {
-                isPelicanActive = true
                 pelicanState = 1
                 pelicanHp = 10
                 pelicanTimer = 3f
                 pelicanX = worldWidth - 150f
-                pelicanY = worldHeight - 150f
+                // 140px 이미지의 윗변이 우측 상단 HUD 아래에 오도록 배치한다.
+                pelicanY = worldHeight - 250f
 
                 // PPT에서는 생성자 인자가 생략되어 있어 실제 ExampleEnemy 인자로 완성한다.
                 // ExampleEnemy는 위치/이동 상태만 담당하며 팰리컨 그림은 기존 텍스처로 표시한다.
@@ -240,7 +241,6 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     }
 
     private fun finishPelicanEvent(success: Boolean) {
-        isPelicanActive = false
         pelicanState = if (success) 2 else 3
         pelicanTimer = 0f
         pelicanObject?.dispose()
@@ -412,7 +412,7 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     }
 
     private fun endGame() {
-        isPelicanActive = false
+        pelicanState = 0
         pelicanObject?.dispose()
         pelicanObject = null
         currentGameState = GameState.GAME_OVER
@@ -445,7 +445,6 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
         buffSpawnTimer = 0f
         currentStage = 1
         playerObj.updateState(1, "")
-        isPelicanActive = false
         pelicanSpawnTimer = 0f
         pelicanSpawnInterval = Random.nextDouble(10.0, 15.0).toFloat()
         pelicanState = 0
@@ -549,6 +548,7 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     }
 
     override fun dispose() {
+        pelicanState = 0
         super.dispose()
         backgroundTextures.values.forEach { it.dispose() }
         pelicanTextureIdle?.dispose()
