@@ -5,7 +5,6 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.math.MathUtils
-import java.util.concurrent.CopyOnWriteArrayList
 
 class FoodGameWorld : GameWorld(1024f, 768f) {
 
@@ -29,6 +28,17 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     private var debuffAcquiredCount = 0
     private var typhoonTimer = 0f
     private var isTyphoonActive = false
+
+    // 팰리컨 QTE: 3스테이지, 10~15초 간격, 3초 안에 SPACE 10번
+    private var pelicanSpawnTimer = 0f
+    private var pelicanSpawnInterval = MathUtils.random(10f, 15f)
+    private var isPelicanActive = false
+    private var pelicanTimeLeft = 0f
+    private var pelicanPressCount = 0
+    private var pelicanFeedback = ""
+    private var pelicanFeedbackTimer = 0f
+    private var pelicanTextureIdle: Texture? = null
+    private var pelicanTextureHit: Texture? = null
 
     private var feverTimer = 0f
     private var isFeverActive = false
@@ -57,6 +67,8 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
         backgroundTextures[1] = Texture(Gdx.files.internal("st1_bg.png"))
         backgroundTextures[2] = Texture(Gdx.files.internal("st2_bg.png"))
         backgroundTextures[3] = Texture(Gdx.files.internal("st3_bg.png"))
+        pelicanTextureIdle = Texture(Gdx.files.internal("pellican-01.png"))
+        pelicanTextureHit = Texture(Gdx.files.internal("pellican-02.png"))
     }
 
     override fun update(delta: Float) {
@@ -113,6 +125,8 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
             if (spawnAlterTimer <= 0f) spawnAlterType = ""
         }
 
+        updatePelican(delta)
+
         // 3. 컨트롤러 입력 처리
         var moveSpeed = 450f * currentSpeedMultiplier * delta
         if (InputHandler.isKeyPressed(InputHandler.LEFT)) playerObj.move(-moveSpeed)
@@ -137,6 +151,62 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
 
         updateAllObjects(delta)
         removeDead()
+    }
+
+    private fun updatePelican(delta: Float) {
+        pelicanFeedbackTimer = (pelicanFeedbackTimer - delta).coerceAtLeast(0f)
+        if (currentStage != 3) return
+
+        if (!isPelicanActive) {
+            pelicanSpawnTimer += delta
+            if (pelicanSpawnTimer >= pelicanSpawnInterval) {
+                isPelicanActive = true
+                pelicanPressCount = 0
+                pelicanTimeLeft = 3f
+                pelicanSpawnTimer = 0f
+                pelicanSpawnInterval = MathUtils.random(10f, 15f)
+            }
+            return
+        }
+
+        if (InputHandler.isKeyJustPressed(InputHandler.SPACE)) {
+            pelicanPressCount++
+            if (pelicanPressCount >= 10) {
+                finishPelicanEvent(true)
+                return
+            }
+        }
+        pelicanTimeLeft -= delta
+        if (pelicanTimeLeft <= 0f) finishPelicanEvent(false)
+    }
+
+    private fun finishPelicanEvent(success: Boolean) {
+        isPelicanActive = false
+        pelicanTimeLeft = 0f
+        pelicanFeedback = if (success) "PELICAN DEFENDED!" else "PELICAN STOLE THE FOOD!"
+        pelicanFeedbackTimer = 1.8f
+        if (!success) {
+            getObjects().filterIsInstance<FallingObject>().forEach { food ->
+                remove(food)
+                food.dispose()
+            }
+        }
+    }
+
+    private fun drawPelicanEvent() {
+        if (currentGameState != GameState.IN_PLAY) return
+        if (isPelicanActive) {
+            val texture = if (pelicanPressCount % 2 == 0) pelicanTextureIdle else pelicanTextureHit
+            texture?.let {
+                batch.begin()
+                batch.draw(it, screenWidth / 2f - 90f, screenHeight - 246f, 180f, 160f)
+                batch.end()
+            }
+            drawTextOnScreen("PELICAN! PRESS SPACE 10 TIMES", screenWidth / 2f - 205f, screenHeight - 252f, Color.YELLOW, 1.25f)
+            drawTextOnScreen("${pelicanPressCount}/10 | ${"%.1f".format(java.util.Locale.US, pelicanTimeLeft.coerceAtLeast(0f))}s", screenWidth / 2f - 60f, screenHeight - 284f, Color.WHITE, 1.25f)
+        } else if (pelicanFeedbackTimer > 0f) {
+            drawTextOnScreen(pelicanFeedback, screenWidth / 2f - 166f, screenHeight - 155f, Color.YELLOW, 1.2f)
+        }
     }
 
     private fun updateGameOverScreen() {
@@ -275,12 +345,34 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
     }
 
     private fun resetGame() {
+        getObjects().filterIsInstance<FallingObject>().forEach { food ->
+            remove(food)
+            food.dispose()
+        }
         gameScore = 0
         totalTimer = 180f
         comboCount = 0
         debuffAcquiredCount = 0
         resetStatusEffects()
         isTyphoonActive = false
+        typhoonTimer = 0f
+        feverTimer = 0f
+        isFeverActive = false
+        spawnAlterTimer = 0f
+        spawnAlterType = ""
+        basicSpawnTimer = 0f
+        rareSpawnTimer = 0f
+        debuffSpawnTimer = 0f
+        buffSpawnTimer = 0f
+        currentStage = 1
+        playerObj.updateState(1, "")
+        isPelicanActive = false
+        pelicanSpawnTimer = 0f
+        pelicanSpawnInterval = MathUtils.random(10f, 15f)
+        pelicanPressCount = 0
+        pelicanTimeLeft = 0f
+        pelicanFeedback = ""
+        pelicanFeedbackTimer = 0f
         currentGameState = GameState.IN_PLAY
     }
 
@@ -368,11 +460,14 @@ class FoodGameWorld : GameWorld(1024f, 768f) {
                 }
             }
         }
+        drawPelicanEvent()
     }
 
     override fun dispose() {
         super.dispose()
         backgroundTextures.values.forEach { it.dispose() }
+        pelicanTextureIdle?.dispose()
+        pelicanTextureHit?.dispose()
     }
 }
 
