@@ -24,20 +24,26 @@ class FallingObject(
 
     private val texture: Texture = Texture(Gdx.files.internal("$imgName.png"))
     private var baseSpeed = 250f
-    private var timeElapsed = 0f
-    private val zigzagAmplitude = 150f // 태풍 시 좌우 변동 폭
-    private val zigzagFrequency = 5f   // 지그재그 주기
+    private var typhoonElapsed = 0f
+    private var previousZigzagOffset = 0f
+    private val zigzagAmplitude = 75f
+    private val zigzagFrequency = 5f
 
     override fun update(delta: Float) {
-        timeElapsed += delta
-
-        // 위에서 아래로 하락
         y -= baseSpeed * delta
-
-        // 태풍 모드 발동 시 크게 지그재그 모션 추가
         if (isTyphoonMode) {
-            x += sin(timeElapsed * zigzagFrequency) * zigzagAmplitude * delta
+            // 델타 시간에 따라 주기적인 좌우 이동. 이전 오프셋과의 차이만 반영.
+            typhoonElapsed += delta
+            val offset = sin(typhoonElapsed * zigzagFrequency) * zigzagAmplitude
+            x += offset - previousZigzagOffset
+            previousZigzagOffset = offset
+        } else {
+            // 종료 시 누적된 오프셋을 되돌려 다음 이벤트 시작을 안정적으로 처리.
+            x -= previousZigzagOffset
+            previousZigzagOffset = 0f
+            typhoonElapsed = 0f
         }
+        x = x.coerceIn(0f, 1024f - width)
     }
 
     override fun isAlive(): Boolean {
